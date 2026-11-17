@@ -1,0 +1,7 @@
+# release artifacts built by git archive
+/*.zip
+# the harness runs against node_modules that live outside the repo, but keep it honest
+node_modules/
+# never commit client state
+WTF/
+*.pyc
