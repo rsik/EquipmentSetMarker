@@ -750,7 +750,11 @@ local events = {
   "PLAYER_ENTERING_WORLD", "PLAYER_EQUIPMENT_CHANGED", "EQUIPMENT_SETS_CHANGED",
   "BAG_UPDATE", "BAG_UPDATE_DELAYED", "GET_ITEM_INFO_RECEIVED",
 }
-local maybeEvents = { "BANKFRAME_OPENED", "BANKFRAME_SHOWN", "PLAYERBANKSLOTS_CHANGED", "PLAYERBANKBAGSLOTS_CHANGED" }
+-- every name here is verified present in this client (string count >= 1 in Wow.exe). there is
+-- no GetSendEventNames here to ask at runtime, and RegisterEvent prints its own chat error for
+-- an unknown name, which pcall cannot hush, so an unverified name must never be attempted.
+-- the first release leaned on BANKFRAME_SHOWN and PLAYERBANKBAGSLOTS_CHANGED: both absent here.
+local bankEvents = { "BANKFRAME_OPENED", "BANKFRAME_CLOSED", "PLAYERBANKSLOTS_CHANGED" }
 
 local function onEvent(self, event)
   if event == "EQUIPMENT_SETS_CHANGED" or event == "GET_ITEM_INFO_RECEIVED" or event == "PLAYER_ENTERING_WORLD" then
@@ -863,7 +867,7 @@ function ESM.Init()
   core = CreateFrame("Frame", ADDON .. "Core", UIParent)
   core:SetScript("OnEvent", onEvent)
   for _, event in ipairs(events) do core:RegisterEvent(event) end
-  for _, event in ipairs(maybeEvents) do step("event " .. event, function() core:RegisterEvent(event) end) end
+  for _, event in ipairs(bankEvents) do step("event " .. event, function() core:RegisterEvent(event) end) end
 
   step("tooltip hooks", ESM.HookTooltips)
   step("first build", function()

@@ -21,10 +21,26 @@ local realprint = print
 
 local messages = {}
 
+-- every name here was verified as a string in Wow.exe on this client (count >= 1). the real
+-- client prints its own chat error for an unknown event and pcall cannot hush it, and
+-- GetSendEventNames does not exist here, so the stub refuses unknown names too instead of
+-- accepting anything, which is how two dead events reached a release
+local knownEvents = {
+  ADDON_LOADED = true, PLAYER_LOGIN = true, PLAYER_ENTERING_WORLD = true,
+  PLAYER_EQUIPMENT_CHANGED = true, EQUIPMENT_SETS_CHANGED = true,
+  BAG_UPDATE = true, BAG_UPDATE_DELAYED = true, GET_ITEM_INFO_RECEIVED = true,
+  BANKFRAME_OPENED = true, BANKFRAME_CLOSED = true, PLAYERBANKSLOTS_CHANGED = true,
+}
+
 local allFrames = {}
 
 local function mixin(t)
-  function t:RegisterEvent(e) self.events[e] = true end
+  function t:RegisterEvent(e)
+    if not knownEvents[e] then
+      error(('Attempt to register unknown event "%s"'):format(tostring(e)))
+    end
+    self.events[e] = true
+  end
   function t:UnregisterEvent(e) self.events[e] = nil end
   function t:IsEventRegistered(e) return self.events[e] end
   function t:SetScript(name, fn) self.scripts[name] = fn end
@@ -610,6 +626,17 @@ else
   tick()
   ok(not marked(buttons[4]), "everything unmarked once no set holds any item")
 end
+
+-- the client says so itself in chat when an event name is dead, so this is the fence that
+-- keeps an unverifiable name out of a release
+local eventNoise
+for _, m in ipairs(messages) do
+  if m:find("unknown event", 1, true) or m:find("ESM event ", 1, true) then
+    eventNoise = m
+    break
+  end
+end
+ok(not eventNoise, "no dead event name was registered" .. (eventNoise and (": " .. eventNoise) or ""))
 
 print(table.concat(report, "\n"))
 local reds = 0
