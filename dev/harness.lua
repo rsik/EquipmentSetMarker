@@ -263,6 +263,12 @@ elseif scenario == "noicon" then
   end
   expectedIcon = FALLBACK
 end
+
+-- item 1002 sits in both sets, so these are the scenarios where that has to draw two icons.
+-- in numicon both sets hand back the same texture id, in slotapi only one of the two sets ever
+-- gets an icon, and in noicon neither has one - there the row has to collapse to one icon
+local distinctIcons = (scenario == "blizzard" or scenario == "gw2"
+  or scenario == "stale" or scenario == "swapped")
 GetInventorySlotInfo = function(name)
   return ({ HeadSlot = 1, NeckSlot = 2, ChestSlot = 5, MainHandSlot = 16 })[name]
 end
@@ -380,6 +386,30 @@ tick()
 
 local function marker(button) return button.textures[1] end
 local function marked(button) return (marker(button) and marker(button).shown == true) and true or false end
+-- the addon keeps its row of icons in button.esmMarkers, entry 1 in the corner and the rest to
+-- its left. the textures are created marker, edge, marker, edge, ... so textures[1] is still
+-- entry 1s picture and every marker() check above reads the corner icon
+local function shownMarkers(button)
+  local n = 0
+  for _, entry in ipairs(button.esmMarkers or {}) do
+    if entry.marker.shown == true then n = n + 1 end
+  end
+  return n
+end
+local function iconList(button)
+  local out = {}
+  for _, entry in ipairs(button.esmMarkers or {}) do
+    if entry.marker.shown == true then out[#out + 1] = tostring(entry.marker.texture) end
+  end
+  return table.concat(out, " | ")
+end
+local function rowWidth(button)
+  local w = 0
+  for _, entry in ipairs(button.esmMarkers or {}) do
+    if entry.marker.shown == true then w = w + entry.marker:GetWidth() + 1 end
+  end
+  return math.max(0, w - 1)
+end
 
 -- the login status line arrives through C_Timer.After
 fireEvent("PLAYER_ENTERING_WORLD")
@@ -407,9 +437,43 @@ else
   ok(marked(_G["CharacterHeadSlot"]), "equipped head slot (item 2000) is marked")
   ok(marker(buttons[1]).texture == expectedIcon,
     "marker draws the expected icon, got " .. tostring(marker(buttons[1]).texture))
-  if scenario == "blizzard" or scenario == "gw2" or scenario == "stale" then
+  if distinctIcons then
+    -- the whole point: one item, several sets, several icons
+    ok(shownMarkers(buttons[4]) == 2,
+      "a slot whose item is in two sets draws two icons, got " .. shownMarkers(buttons[4]))
+    ok(iconList(buttons[4]) == "interface\\icons\\inv_chest_cloth_42 | interface\\icons\\inv_sword_04",
+      "both sets own icon, in set order, got " .. iconList(buttons[4]))
     ok(marker(buttons[4]).texture == "interface\\icons\\inv_chest_cloth_42",
-      "an item in two sets takes the first set that claimed it")
+      "the corner icon is still the first set that claimed the item")
+    ok(rowWidth(buttons[4]) <= buttons[4]:GetWidth(),
+      "a row of icons stays inside its slot (" .. rowWidth(buttons[4]) .. " of "
+      .. buttons[4]:GetWidth() .. ")")
+    -- the fence above has to be able to fail: at scale 1 one icon is already the whole slot,
+    -- so without the fit rule two of them would be twice the slot wide
+    local keepScale = EquipmentSetMarkerDB.scale
+    SlashCmdList["EQUIPMENTSETMARKER"]("size 1")
+    tick()
+    ok(rowWidth(buttons[4]) <= buttons[4]:GetWidth(),
+      "two icons at size 1 shrink to fit the slot (" .. rowWidth(buttons[4]) .. " of "
+      .. buttons[4]:GetWidth() .. ")")
+    SlashCmdList["EQUIPMENTSETMARKER"]("size " .. tostring(keepScale))
+    tick()
+    ok(shownMarkers(buttons[1]) == 1, "a slot in one set draws exactly one icon")
+
+    SlashCmdList["EQUIPMENTSETMARKER"]("max 1")
+    tick()
+    ok(shownMarkers(buttons[4]) == 1, "/esm max 1 draws the first set only, got " .. shownMarkers(buttons[4]))
+    SlashCmdList["EQUIPMENTSETMARKER"]("max 99")
+    tick()
+    ok(shownMarkers(buttons[4]) <= 3,
+      "a wild max is clamped, and there are only two sets to draw anyway (" .. shownMarkers(buttons[4]) .. ")")
+    SlashCmdList["EQUIPMENTSETMARKER"]("max 3")
+    tick()
+    ok(shownMarkers(buttons[4]) == 2, "/esm max 3 draws both icons again")
+  else
+    ok(shownMarkers(buttons[4]) == 1,
+      "sets with nothing distinct to show collapse to one icon, got " .. shownMarkers(buttons[4])
+      .. " (" .. iconList(buttons[4]) .. ")")
   end
   ok(marker(buttons[1]).layer == "OVERLAY" and marker(buttons[1]).drawLevel == 7,
     "marker draws above the icon and the count")
@@ -437,6 +501,18 @@ else
     ok(tipText:find("PvP Gear") ~= nil, "tooltip prints the set name, not the icon path")
   end
 
+  -- an item in two sets is in two sets, so the tooltip says both
+  frameCount = frameCount + 1
+  messages = {}
+  tooltip.itemLink = "|cff808080item:1002|r"
+  tooltip:Fire("OnTooltipSetItem")
+  local bothText = table.concat(messages, "\n")
+  if distinctIcons then
+    ok(#messages == 2, "one tooltip line per set, got " .. #messages)
+    ok(bothText:find("PvP Gear") ~= nil and bothText:find("raid") ~= nil,
+      "both set names are in the tooltip")
+  end
+
   frameCount = frameCount + 1
   messages = {}
   tooltip.itemLink = "|cff808080item:3000|r"
@@ -461,6 +537,10 @@ else
   ok(not marked(buttons[1]), "slot 1 unmarked after its set dropped the item")
   ok(marked(buttons[4]), "slot 4 keeps its mark, 1002 is still in a set")
   ok(not marked(buttons[2]), "slot 2 was never marked and still is not")
+  if distinctIcons then
+    ok(shownMarkers(buttons[4]) == 1,
+      "the second icon goes away when its set drops the item, got " .. shownMarkers(buttons[4]))
+  end
 
   -- the item leaves the bag
   BAG[0][4] = nil
@@ -516,6 +596,8 @@ else
   realprint("---- end dump ----")
   ok(#messages >= 4, "dump printed " .. #messages .. " lines")
   ok(text:find("sets 2") ~= nil, "dump counts the sets")
+  ok(text:find("icons: limit 3") ~= nil, "dump reports the icon limit")
+  ok(text:find("widest slot") ~= nil, "dump reports how many icons the busiest slot drew")
   ok(text:find("  step failed:") == nil, "dump reports no failed step")
   ok(text:find("CAMELOT 7") ~= nil, "dump names the client")
   ok(text:find("refreshes") ~= nil, "dump reports how much work it has done")

@@ -35,6 +35,9 @@ local MAX_BUTTON_SCAN = 40
 -- own OnShow)
 local IDLE_PARK = 1.0
 local IDLE_WATCHDOG = 2.0
+-- an item can belong to a dozen sets (every raid boss has one), and a row of a dozen icons is
+-- a row of unreadable pixels, so a slot draws at most this many
+local MAX_MARKER_LIMIT = 6
 
 local defaults = {
   enabled = true,
@@ -42,6 +45,7 @@ local defaults = {
   anchor = "CORNER", -- CORNER inside the slot, TOP floats it above the slot
   tooltip = true,
   icon = false, -- false = use each sets own icon, otherwise a texture path
+  max = 3, -- how many set icons one slot may draw at once
   equipSlots = true,
   verbose = true,
 }
@@ -52,7 +56,7 @@ local defaults = {
 local DB_VERSION = 2
 
 local db
-local index = {} -- itemID -> set
+local index = {} -- itemID -> { set, set, ... } in set order, since an item can be in many sets
 local sets = {} -- { id, name, icon }
 local targets = {} -- button -> { frame = container } or { invSlot = n }
 local order = {} -- buttons in insertion order, so a refresh never grows while iterating
@@ -62,7 +66,7 @@ local containers = {} -- container frames found by the last sweep
 local failures = {} -- every step that threw, printed at login and by /esm dump
 local failuresShown = 0
 local MAX_FAILURE_MESSAGES = 6
-local stats = { painted = 0, refreshes = 0, passes = 0, parked = 0 }
+local stats = { painted = 0, refreshes = 0, passes = 0, parked = 0, widest = 0 }
 local dirty, needRebuild, lastSweep = true, true, 0
 local core, tooltipBy
 -- set up in the lifecycle section, forward declared because events and frame hooks call them
@@ -237,7 +241,17 @@ function ESM.Rebuild()
 
   for _, set in ipairs(sets) do
     forEachSetItem(set.id, function(itemID)
-      if not index[itemID] then index[itemID] = set end
+      local list = index[itemID]
+      if not list then
+        list = {}
+        index[itemID] = list
+      end
+      -- the client can hand the same set twice (a set listed under two ids, or an item id
+      -- repeated inside one set), and the same icon painted twice is not information
+      for _, seen in ipairs(list) do
+        if seen == set then return end
+      end
+      list[#list + 1] = set
     end)
   end
 end
@@ -253,73 +267,138 @@ end
 -- markers
 --------------------------------------------------------------------------------
 
-local function markerFor(button)
-  local marker = button.esmMarker
-  if not marker then
+-- one icon of the row: the texture plus the dark plate behind it. entry 1 sits in the corner
+-- and the rest hang to its left, so a slot in a single set looks exactly like it always did
+local function markerEntry(button, i)
+  local row = button.esmMarkers
+  if not row then
+    row = {}
+    button.esmMarkers = row
+  end
+  local entry = row[i]
+  if not entry then
     -- draw level 7 keeps it above the icon, the count and the quality border
-    marker = button:CreateTexture(nil, "OVERLAY", nil, 7)
+    local marker = button:CreateTexture(nil, "OVERLAY", nil, 7)
     marker:SetTexCoord(0.06, 0.94, 0.06, 0.94)
     local edge = button:CreateTexture(nil, "OVERLAY", nil, 6)
     edge:SetColorTexture(0, 0, 0, 0.9)
     edge:SetPoint("TOPLEFT", marker, "TOPLEFT", -1, 1)
     edge:SetPoint("BOTTOMRIGHT", marker, "BOTTOMRIGHT", 1, -1)
-    button.esmMarker, button.esmEdge = marker, edge
+    entry = { marker = marker, edge = edge }
+    row[i] = entry
   end
   -- the frames own level can change, so the draw level is re-asserted on every pass
-  marker:SetDrawLayer("OVERLAY", 7)
-  return marker
+  entry.marker:SetDrawLayer("OVERLAY", 7)
+  return entry
+end
+
+local function hideEntry(entry)
+  if entry.marker and entry.marker:IsShown() then entry.marker:Hide() end
+  entry.marker.esmShown = false
+  if entry.edge and entry.edge:IsShown() then entry.edge:Hide() end
 end
 
 local function hideMarker(button)
-  if button.esmMarker and button.esmMarker:IsShown() then
-    button.esmMarker:Hide()
-    button.esmMarker.esmShown = false
-  end
-  if button.esmEdge and button.esmEdge:IsShown() then button.esmEdge:Hide() end
+  local row = button.esmMarkers
+  if type(row) ~= "table" then return end
+  for i = 1, #row do hideEntry(row[i]) end
 end
 
-local function placeMarker(button, set)
-  if not set then
+local function markerLimit()
+  local n = math.floor(tonumber(db.max) or defaults.max)
+  if n < 1 then n = 1 elseif n > MAX_MARKER_LIMIT then n = MAX_MARKER_LIMIT end
+  return n
+end
+
+-- the pictures this slot has to draw, in order, with the junk removed. two sets that share one
+-- icon are one icon (and an /esm icon override would otherwise paint the same texture side by
+-- side up to the limit), and a set the client gave no icon for waits at the door: a generic
+-- sparkle next to a real icon is noise, so it is only drawn when nothing else came
+local function iconsFor(list)
+  local out, seen, limit, unknown = {}, {}, markerLimit(), 0
+  local forced = type(db.icon) == "string" and db.icon ~= ""
+  for _, set in ipairs(list) do
+    if not forced and (set.icon == nil or set.icon == false) then
+      unknown = unknown + 1
+    else
+      local texture = markerTextureFor(set)
+      if texture ~= nil and not seen[texture] then
+        seen[texture] = true
+        out[#out + 1] = texture
+        if #out >= limit then break end
+      end
+    end
+  end
+  if #out == 0 and unknown > 0 then out[1] = markerTextureFor(list[1]) end
+  return out
+end
+
+local function placeMarker(button, list)
+  if type(list) ~= "table" or #list == 0 then
     hideMarker(button)
     return
   end
 
-  local marker = markerFor(button)
+  local icons = iconsFor(list)
+  local count = #icons
+  if count == 0 then
+    hideMarker(button)
+    return
+  end
+  if count > stats.widest then stats.widest = count end
+
   local width = button:GetWidth()
   if type(width) ~= "number" or width <= 0 then width = 36 end
   local size = math.max(9, width * (tonumber(db.scale) or defaults.scale))
-  local texture = markerTextureFor(set)
+  -- the row never gets wider than the slot: a second icon that crawled over the neighbour
+  -- slot looked like a bug, so the icons shrink to fit instead of spilling
+  local fit = math.floor((width - (count + 1)) / count)
+  if fit < size then size = math.max(4, fit) end
   local anchor = db.anchor == "TOP" and "TOP" or "CORNER"
+  local gap = 1
+  local row = count * size + (count - 1) * gap
 
-  -- a pass that would draw exactly what is already drawn draws nothing: with a hundred and
-  -- ten slots on screen this is the difference between two client calls and five hundred
-  if marker.esmTexture == texture and marker.esmSize == size and marker.esmAnchor == anchor
-    and marker.esmShown then
-    -- shown again unconditionally: something else (a bag addon, a tooltip scan) can hide a
-    -- child, and the values below say this is the right picture already
-    marker:Show()
-    stats.painted = stats.painted + 1
-    return
-  end
-  marker.esmTexture, marker.esmSize, marker.esmAnchor = texture, size, anchor
+  for i, texture in ipairs(icons) do
+    local entry = markerEntry(button, i)
+    local marker = entry.marker
+    -- the whole picture of this one icon in one value. the index is part of it because the
+    -- icon that sits in the corner changes when the set before it goes away
+    local key = anchor .. " " .. i .. " " .. size .. " " .. tostring(texture)
 
-  -- the anchor is written on every pass that changes it, so the old points go first
-  marker:ClearAllPoints()
-  marker:SetSize(size, size)
-  marker:SetTexture(texture)
-  if anchor == "TOP" then
-    marker:SetPoint("BOTTOM", button, "TOP", 0, math.floor(size * 0.35))
-  else
-    marker:SetPoint("TOPRIGHT", button, "TOPRIGHT", -1, -1)
-  end
-  marker:Show()
-  marker.esmShown = true
+    -- a pass that would draw exactly what is already drawn draws nothing: with a hundred and
+    -- ten slots on screen this is the difference between two client calls and five hundred
+    if marker.esmKey == key and marker.esmShown then
+      -- shown again unconditionally: something else (a bag addon, a tooltip scan) can hide a
+      -- child, and the values below say this is the right picture already
+      marker:Show()
+      if entry.edge then entry.edge:Show() end
+      stats.painted = stats.painted + 1
+    else
+      marker.esmKey, marker.esmShown = key, true
 
-  if button.esmEdge then
-    button.esmEdge:SetSize(size + 2, size + 2)
-    button.esmEdge:Show()
+      -- the anchor is written on every pass that changes it, so the old points go first
+      marker:ClearAllPoints()
+      marker:SetSize(size, size)
+      marker:SetTexture(texture)
+      if anchor == "TOP" then
+        -- the row floats above the slot, centred on it
+        marker:SetPoint("BOTTOM", button, "TOP",
+          math.floor(row / 2 - size / 2 - (i - 1) * (size + gap)), math.floor(size * 0.35))
+      else
+        marker:SetPoint("TOPRIGHT", button, "TOPRIGHT", -1 - (i - 1) * (size + gap), -1)
+      end
+      marker:Show()
+
+      if entry.edge then
+        entry.edge:SetSize(size + 2, size + 2)
+        entry.edge:Show()
+      end
+      stats.painted = stats.painted + 1
+    end
   end
-  stats.painted = stats.painted + 1
+
+  -- the row was longer on an earlier pass (a set lost the item), so the leftovers go away
+  for i = count + 1, #(button.esmMarkers or {}) do hideEntry(button.esmMarkers[i]) end
 end
 
 -- which slot a button shows, in bag/slot form. modern buttons answer through their own
@@ -407,18 +486,30 @@ local function updateButton(button)
   end
   if not itemID then itemID = buttonItemID(button) end
 
-  local set = itemID and index[itemID]
+  local list = itemID and index[itemID]
   local info = slotSetInfo(bagID, slotID)
   if info then
-    if not set then
-      set = info
-    elseif (set.icon == nil or set.icon == false) and info.icon then
-      -- the set itself has no icon through the set api, this slot told us one: remember it
-      -- for the whole set instead of asking again on every item of it
-      set.icon = info.icon
+    if not list or #list == 0 then
+      list = { info }
+    else
+      -- the set itself has no icon through the set api and this slot told us one: remember it
+      -- for the whole set instead of asking again on every item of it. the per slot api only
+      -- names one set, so it fills an icon, it never adds a second one
+      local learn
+      for _, set in ipairs(list) do
+        if info.name and set.name == info.name then
+          learn = set
+        elseif not learn and not info.name then
+          learn = set
+        end
+      end
+      learn = learn or list[1]
+      if learn and info.icon and (learn.icon == nil or learn.icon == false) then
+        learn.icon = info.icon
+      end
     end
   end
-  placeMarker(button, set)
+  placeMarker(button, list)
 end
 
 local function safeUpdate(button)
@@ -567,7 +658,7 @@ function ESM.Refresh(force)
   wipe(visCache) -- a fresh pass gets fresh visibility answers
   ESM.Sweep(force)
   stats.refreshes = stats.refreshes + 1
-  stats.painted = 0
+  stats.painted, stats.widest = 0, 0
   for i = 1, #order do
     local button = order[i]
     if targets[button] ~= nil then
@@ -582,8 +673,8 @@ end
 
 local function addSetLine(self, itemID)
   if not db.enabled or not db.tooltip or not itemID then return end
-  local set = index[itemID]
-  if not set then return end
+  local list = index[itemID]
+  if not list or #list == 0 then return end
   -- the processor path and the script path can both fire for one hover, so the same item
   -- is only annotated once per frame. keying it on the link alone would outlive the tooltip
   -- and the line would never come back when the same slot is hovered twice in a row.
@@ -591,7 +682,12 @@ local function addSetLine(self, itemID)
   if self.esmAddedFor == itemID and self.esmAddedTick == tick then return end
   self.esmAddedFor, self.esmAddedTick = itemID, tick
   step("tooltip line", function()
-    self:AddLine(("|T%s:14:14:0|t |cffffd100Equipment set:|r %s"):format(markerTextureFor(set), set.name or "?"))
+    -- one line per set, each with its own icon: an item in three sets is in three sets
+    for i, set in ipairs(list) do
+      if i <= markerLimit() then
+        self:AddLine(("|T%s:14:14:0|t |cffffd100Equipment set:|r %s"):format(markerTextureFor(set), set.name or "?"))
+      end
+    end
     self:Show()
   end)
 end
@@ -663,6 +759,10 @@ function ESM.Dump()
     tbl(C_Container ~= nil), tbl(TooltipDataProcessor ~= nil))
   line("index: sets %d  items %d  buttons %d  containers %d  marked %d  tooltip %s",
     #sets, countIndex(), #order, #containers, stats.painted, tbl(tooltipBy))
+  -- widest is the busiest slot of the last pass: how many icons had to share one slot, against
+  -- the limit that decides it
+  line("icons: limit %d  widest slot %d  scale %s  anchor %s  override %s",
+    markerLimit(), stats.widest, tbl(db.scale), tbl(db.anchor), tbl(db.icon))
   -- the cost line: refreshes counts passes, slot passes counts only the slots that were on
   -- screen, parked counts how often the updater detached itself
   line("work: refreshes %d  slot passes %d  %s  parked %d times",
@@ -721,6 +821,11 @@ local sub = {
     local n = tonumber(arg)
     if n then db.scale = math.min(1.5, math.max(0.1, n)); dirty = true end
   end,
+  -- one icon per set, so this is how many sets a slot may show at once. 1 is the old behaviour
+  max = function(arg)
+    local n = tonumber(arg)
+    if n then db.max = math.min(MAX_MARKER_LIMIT, math.max(1, math.floor(n))); dirty = true end
+  end,
   icon = function(arg) db.icon = (arg and arg ~= "" and arg ~= "reset") and arg or false; dirty = true end,
   dump = function() ESM.Dump() end,
   reset = function()
@@ -738,7 +843,7 @@ local function slash(input)
   if fn then
     step("command " .. tostring(cmd), function() fn(arg) end)
   else
-    say("on|off, top|corner, size <0.1-1.5>, icon <path|reset>, tooltip on|off, equip on|off, reset, dump")
+    say("on|off, top|corner, size <0.1-1.5>, max <1-6>, icon <path|reset>, tooltip on|off, equip on|off, reset, dump")
   end
 end
 

@@ -28,7 +28,14 @@ scenarios:
   read by position
 - `noicon` - no icon anywhere, and the small numbers in the return (item counts) must not be
   painted as a texture
+- the multi icon checks live in the bag scenarios: an item in two sets draws two icons in set
+  order, the row never gets wider than the slot (checked again at size 1, where one icon already
+  is the whole slot), `/esm max` caps and restores them, the second icon goes away when its set
+  drops the item, and the tooltip prints one line per set
 
-37 checks in each bag scenario, 39 in `stale`, 34-35 in the icon scenarios, 9 in `broken` - 275 total. When a check goes red, read the label: it
+457 checks in total: 69 in `blizzard` and `gw2`, 73 in `stale`, 68 in `swapped`, 56 in the icon
+scenarios, 10 in `broken`. When a check goes red, read the label: it
 says what the addon was expected to do. Before trusting a green run, break the change by hand
-and confirm the check goes red - a fence that cannot fail is decoration.
+and confirm the check goes red - a fence that cannot fail is decoration. The four mutations that
+must each turn something red: only index the first set per item, drop the fit-to-slot shrink,
+skip hiding the leftover icons, ignore `db.max` in `markerLimit`.

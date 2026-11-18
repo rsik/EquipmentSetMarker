@@ -2,9 +2,10 @@
 
 marks every inventory slot whose item is part of a saved **Equipment Manager** set, using **the
 icon you picked for that set** in the Equipment Manager. the "Heals" set marks with the Heals
-icon, "Feral" with the Feral one, so shared pieces are told apart at a glance. covers the bags,
-the keyring, the bank tabs and the character equipment slots, and adds one tooltip line per
-hovered item.
+icon, "Feral" with the Feral one. an item that belongs to **several** sets gets several icons —
+a row of them inside the slot, one per set, so shared pieces are told apart at a glance instead
+of only showing whichever set was saved first. covers the bags, the keyring, the bank tabs and
+the character equipment slots, and adds one tooltip line per set the hovered item is in.
 
 built and tested for **World of Warcraft: Forever** (`## Interface: 16001`).
 
@@ -16,6 +17,10 @@ the set icon is taken from the first source the client answers on:
 3. the per slot api (`GetContainerItemEquipmentSetInfo`), for builds whose set info call carries
    no icon - learned once per set, and dropped whenever a bag changes
 4. only if all three come up empty: a small generic sparkle
+
+a slot never draws the same picture twice: two sets that share an icon are one icon, and the
+generic sparkle only shows when a slot has nothing else to show — a sparkle next to a real icon
+is noise, not information.
 
 ## install
 
@@ -46,12 +51,18 @@ is named `EquipmentSetMarker` (the client finds an addon by the folder matching 
 | `/esm on` / `/esm off` | markers on or off |
 | `/esm corner` / `/esm top` | inside the top right of the slot (default), or floating above it |
 | `/esm size 0.6` | marker size as a fraction of the slot width (0.1 - 1.5) |
+| `/esm max 2` | how many set icons one slot may draw at once (1 - 6, default 3). `1` is the old one-icon behaviour |
 | `/esm icon Interface\\Icons\\INV_Misc_Bag_08` | one icon for every set (`/esm icon reset` for the set icons) |
 | `/esm tooltip off` | drop the "Equipment set:" tooltip line |
 | `/esm equip off` | skip the character equipment slots |
 | `/esm verbose off` | stop the status lines at login |
 | `/esm reset` | defaults |
 | `/esm dump` | everything the addon can see: client build, which container frames and buttons it found, the sets with the icon each source gave and its raw api returns, what the per slot api answers for a filled slot, how much work it has done, and any step that threw |
+
+the icons of a multi-set slot sit in a row that **never gets wider than the slot**: the first set
+keeps the corner, the others hang to its left, and they shrink together when the row would not
+fit (`/esm dump` prints `icons: limit 3  widest slot 2`, so a slot that came out tiny explains
+itself).
 
 settings live in `EquipmentSetMarkerDB` in SavedVariables. it used to be `EquipSetMarkerDB`, and
 the old table is adopted once on load - saved variables are only filled where a key is missing,
@@ -86,6 +97,8 @@ not - a client call per hidden slot - and now makes none.
 - `step failed: ...` - a client call threw, and the line names it
 - `icon nil (nil)` under a set together with `slot api: false` - this client gives the set icon
   through neither call, so the generic sparkle is all there is
+- `widest slot 1` while an item is clearly in two sets - the two sets share one icon (so it is
+  drawn once), or `/esm max 1` is in effect
 
 open an issue with the dump pasted in and the marker stops being a mystery.
 

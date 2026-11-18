@@ -1,8 +1,8 @@
 ## Interface: 16001
 ## Title: Equipment Set Marker
-## Notes: Marks the bag slots whose item is part of a saved Equipment Manager set, with that sets own icon. /esm
+## Notes: Marks the bag slots whose item is part of a saved Equipment Manager set, with every sets own icon. /esm
 ## Author: rsik
-## Version: 0.1.1
+## Version: 0.2.0
 ## SavedVariables: EquipmentSetMarkerDB, EquipSetMarkerDB
 ## IconTexture: Interface/Icons/INV_Misc_Bag_08
 ## X-Website: https://github.com/rsik/EquipmentSetMarker
